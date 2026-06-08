@@ -1,0 +1,26 @@
+{
+  "is_valid": false,
+  "metrics": {
+    "band": {
+      "cad_outer_diameter_mm": 20.6,
+      "coco_outer_diameter_mm": 20.6,
+      "error_mm": 0.0,
+      "iou": 1.0
+    },
+    "center_stone": {
+      "iou_top": 0.9996891820008165,
+      "width_error_mm": 8.881784197001252e-16,
+      "iou_side": 0.7782932226425093,
+      "height_error_mm": 2.6645352591003757e-15,
+      "z_offset_error_mm": 0.0
+    }
+  },
+  "adjustments": {
+    "head": {
+      "center_stone": {
+        "height": -2.6645352591003757e-15,
+        "z_offset": 0.0
+      }
+    }
+  }
+}

@@ -1,0 +1,241 @@
+{
+  "images": [
+    {
+      "id": 0,
+      "width": 800,
+      "height": 800,
+      "file_name": "side_view.png"
+    },
+    {
+      "id": 2,
+      "width": 800,
+      "height": 800,
+      "file_name": "top_view.png"
+    }
+  ],
+  "categories": [
+    {
+      "id": 0,
+      "name": "ring",
+      "supercategory": "none"
+    },
+    {
+      "id": 1,
+      "name": "Full Ring",
+      "supercategory": "ring"
+    },
+    {
+      "id": 2,
+      "name": "Head",
+      "supercategory": "ring"
+    },
+    {
+      "id": 3,
+      "name": "Prong",
+      "supercategory": "ring"
+    },
+    {
+      "id": 4,
+      "name": "Void",
+      "supercategory": "ring"
+    },
+    {
+      "id": 5,
+      "name": "band",
+      "supercategory": "ring"
+    },
+    {
+      "id": 6,
+      "name": "bridge",
+      "supercategory": "ring"
+    },
+    {
+      "id": 7,
+      "name": "center_stone",
+      "supercategory": "ring"
+    },
+    {
+      "id": 8,
+      "name": "gallery",
+      "supercategory": "ring"
+    },
+    {
+      "id": 9,
+      "name": "halo",
+      "supercategory": "ring"
+    },
+    {
+      "id": 10,
+      "name": "shank",
+      "supercategory": "ring"
+    },
+    {
+      "id": 11,
+      "name": "shoulder",
+      "supercategory": "ring"
+    },
+    {
+      "id": 12,
+      "name": "side_stones",
+      "supercategory": "ring"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 101,
+      "image_id": 2,
+      "category_id": 4,
+      "bbox": [
+        230,
+        230,
+        340,
+        340
+      ],
+      "area": 115600,
+      "iscrowd": 0
+    },
+    {
+      "id": 102,
+      "image_id": 2,
+      "category_id": 5,
+      "bbox": [
+        194,
+        194,
+        412,
+        412
+      ],
+      "area": 169744,
+      "iscrowd": 0
+    },
+    {
+      "id": 103,
+      "image_id": 2,
+      "category_id": 7,
+      "bbox": [
+        340,
+        340,
+        120,
+        120
+      ],
+      "area": 14400,
+      "iscrowd": 0
+    },
+    {
+      "id": 104,
+      "image_id": 2,
+      "category_id": 3,
+      "bbox": [
+        334,
+        334,
+        132,
+        132
+      ],
+      "area": 17424,
+      "iscrowd": 0
+    },
+    {
+      "id": 105,
+      "image_id": 2,
+      "category_id": 9,
+      "bbox": [
+        310,
+        310,
+        180,
+        180
+      ],
+      "area": 32400,
+      "iscrowd": 0
+    },
+    {
+      "id": 201,
+      "image_id": 0,
+      "category_id": 4,
+      "bbox": [
+        230,
+        300,
+        340,
+        340
+      ],
+      "area": 115600,
+      "iscrowd": 0
+    },
+    {
+      "id": 202,
+      "image_id": 0,
+      "category_id": 5,
+      "bbox": [
+        194,
+        264,
+        412,
+        412
+      ],
+      "area": 169744,
+      "iscrowd": 0
+    },
+    {
+      "id": 203,
+      "image_id": 0,
+      "category_id": 7,
+      "bbox": [
+        340,
+        154,
+        120,
+        76
+      ],
+      "area": 9120,
+      "iscrowd": 0
+    },
+    {
+      "id": 204,
+      "image_id": 0,
+      "category_id": 3,
+      "bbox": [
+        334,
+        140,
+        132,
+        100
+      ],
+      "area": 13200,
+      "iscrowd": 0
+    },
+    {
+      "id": 205,
+      "image_id": 0,
+      "category_id": 8,
+      "bbox": [
+        338,
+        230,
+        124,
+        34
+      ],
+      "area": 4216,
+      "iscrowd": 0
+    },
+    {
+      "id": 206,
+      "image_id": 0,
+      "category_id": 6,
+      "bbox": [
+        320,
+        255,
+        160,
+        20
+      ],
+      "area": 3200,
+      "iscrowd": 0
+    },
+    {
+      "id": 207,
+      "image_id": 0,
+      "category_id": 12,
+      "bbox": [
+        194,
+        264,
+        412,
+        120
+      ],
+      "area": 49440,
+      "iscrowd": 0
+    }
+  ]
+}
