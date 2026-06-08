@@ -4,9 +4,11 @@ import logging
 import os
 import sys
 import config
-from coco_parser import parse_geometry
+from coco_parser import parse_geometry, load_coco_annotations
 from semantic_extractor import extract_semantics
+from anchor_extractor import build_anchor_graph
 from context_builder import build_context
+from support_solver import resolve_stone_support, apply_support_to_context
 from llm_planner import plan_tool_calls
 from execution_engine import execute_cad_plan
 from validator import validate_projection
