@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import config
 
@@ -219,6 +220,77 @@ def parse_geometry(coco_path: str, top_image_id: int = None, side_image_id: int 
             geometry["head"][category] = get_physical_dims(bbox_top, bbox_side, category)
             geometry["head"][category]["bbox_top"]  = bbox_top.to_dict()  if bbox_top  else None
             geometry["head"][category]["bbox_side"] = bbox_side.to_dict() if bbox_side else None
+
+    # --- Derive prong geometry from individual prong annotations ---
+    # Instead of treating all prong bboxes as a single merged region, inspect
+    # each individual prong annotation to derive:
+    #   - orientation: "radial" (prongs spread in XY from stone centre, top-view)
+    #                  "vertical" (prongs are tall pillars aligned with Z axis)
+    #   - placement_plane: "XY" (prongs radiate outward when viewed from top)
+    #                      "XZ" (prongs lie in the ring's equatorial plane)
+    #   - prong_angles_deg: list of per-prong angles derived from their pixel
+    #                       positions relative to the ring/stone centre in the
+    #                       top-view annotation.  If individual bboxes are not
+    #                       available the angles are evenly distributed.
+    individual_prong_anns = [a for a in top_anns if a["category"] == "prongs"]
+    stone_top = get_combined_bbox(top_anns, "center_stone")
+
+    if len(individual_prong_anns) > 1 and stone_top:
+        # Each prong's centroid relative to the stone centre gives its angle.
+        prong_angles = []
+        for ann in individual_prong_anns:
+            dx = ann["bbox"].cx - stone_top.cx
+            dy = ann["bbox"].cy - stone_top.cy
+            angle_deg = math.degrees(math.atan2(dy, dx))
+            prong_angles.append(round(angle_deg, 1))
+
+        # Determine orientation from individual prong aspect ratios.
+        # A prong whose bbox is taller than wide (in the top view) is likely a
+        # thin radial feature pointing toward the stone — i.e. "radial".
+        # A prong whose bbox is wider than tall is more likely a flat cap —
+        # i.e. "vertical" (pillar aligned with Z, appearing square from above).
+        avg_aspect = sum(
+            a["bbox"].h / a["bbox"].w if a["bbox"].w > 0 else 1.0
+            for a in individual_prong_anns
+        ) / len(individual_prong_anns)
+
+        if avg_aspect > 1.1:
+            # Tall & narrow in top view → pointed radially at the stone
+            orientation = "radial"
+        else:
+            # Square / wide in top view → vertical pillars (seen from above)
+            orientation = "vertical"
+
+        placement_plane = "XY"  # individual prongs visible from top → XY plane
+
+        logging.info(
+            f"Derived prong orientation='{orientation}', "
+            f"plane='{placement_plane}', angles={prong_angles}"
+        )
+    else:
+        # Fall back: use the combined side-view prong bbox to infer orientation.
+        prong_combined_side = get_combined_bbox(side_anns, "prongs")
+        if prong_combined_side:
+            side_aspect = (
+                prong_combined_side.h / prong_combined_side.w
+                if prong_combined_side.w > 0 else 1.0
+            )
+            # In the side view a "vertical" prong cluster is tall & narrow;
+            # a "radial" cluster (spread around the stone) appears roughly square.
+            orientation = "vertical" if side_aspect > 1.3 else "radial"
+        else:
+            orientation = "radial"
+        placement_plane = "XY"
+        prong_angles = []   # will be evenly distributed by context_builder
+        logging.info(
+            f"Derived prong orientation='{orientation}' from side-view bbox aspect ratio. "
+            f"Per-prong angles not available — will be evenly distributed."
+        )
+
+    if "prongs" in geometry["head"]:
+        geometry["head"]["prongs"]["orientation"]     = orientation
+        geometry["head"]["prongs"]["placement_plane"] = placement_plane
+        geometry["head"]["prongs"]["prong_angles_deg"] = prong_angles
 
     # --- Shank components ---
     for category in ["shoulder", "side_stones"]:

@@ -25,7 +25,18 @@
       "radius": 0.4,
       "height": 7.180219897523485,
       "radial_distance": 3.678541351539185,
-      "z_offset": 9.8
+      "z_offset": 9.8,
+      "prong_style": "claw",
+      "orientation": "radial",
+      "placement_plane": "XY",
+      "angles_deg": [
+        -90.1,
+        -125.2,
+        126.2,
+        90.1,
+        53.5,
+        -54.7
+      ]
     }
   }
 ]

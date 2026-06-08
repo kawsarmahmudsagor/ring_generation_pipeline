@@ -192,29 +192,137 @@ def create_bridge_shape(height, z_offset, inner_radius=8.5, band_width=2.5):
         return block
 
 
-def create_prongs_shape(count, radius, height, radial_distance, z_offset):
+def _make_prong_shaft(radius, height, z_offset, x, y, orientation, placement_plane):
     """
-    Prong cylinders starting at z_offset (just below stone base) and
-    extending upward by height to grip the stone.
+    Build a single prong shaft cylinder placed at (x, y) in the correct plane.
+
+    orientation     : "radial"   — prong radiates outward from stone in XY plane
+                      "vertical" — prong is a pillar aligned with the Z axis
+    placement_plane : "XY" — prong positions are given as (x, y, z_offset),
+                              which is the standard top-view layout.
+                      "XZ" — prong positions are in the ring's equatorial plane;
+                              y=0 for all prongs, z position encodes the angle.
     """
-    if count == 4:
-        angles = [45, 135, 225, 315]
-    elif count == 6:
-        angles = [30, 90, 150, 210, 270, 330]
-    elif count == 8:
-        angles = [0, 45, 90, 135, 180, 225, 270, 315]
+    if placement_plane == "XZ":
+        # Prong sits in the XZ plane (ring equator); it runs along Y
+        shaft = Part.makeCylinder(radius, height,
+                                   App.Vector(x, -height / 2.0, y),
+                                   App.Vector(0, 1, 0))
     else:
-        angles = [45, 135, 225, 315]
+        # Default XY plane — prong runs along Z (vertical)
+        shaft = Part.makeCylinder(radius, height,
+                                   App.Vector(x, y, z_offset),
+                                   App.Vector(0, 0, 1))
+    return shaft
+
+
+def _make_prong_tip(prong_style, radius, shaft_top_center):
+    """
+    Build the prong tip shape based on the semantic prong_style.
+
+    prong_style options:
+      "claw"        — hemisphere + inward-curving cone cap (tapers inward)
+      "round_tip"   — simple sphere (ball tip)
+      "flat"        — flat disc cap
+      "double_claw" — two smaller hemispheres side-by-side (forked tip)
+
+    shaft_top_center : App.Vector at the top centre of the shaft
+    """
+    x, y, z = shaft_top_center.x, shaft_top_center.y, shaft_top_center.z
+
+    if prong_style == "round_tip":
+        return Part.makeSphere(radius, shaft_top_center)
+
+    elif prong_style == "flat":
+        # Flat disc, slightly wider than the shaft
+        disc_r = radius * 1.4
+        disc_h = radius * 0.4
+        return Part.makeCylinder(disc_r, disc_h,
+                                  App.Vector(x - disc_r / 2.0, y - disc_r / 2.0, z),
+                                  App.Vector(0, 0, 1))
+
+    elif prong_style == "double_claw":
+        # Two small spheres offset perpendicular to the stone radius
+        offset = radius * 0.7
+        tip1 = Part.makeSphere(radius * 0.75,
+                                App.Vector(x + offset, y, z))
+        tip2 = Part.makeSphere(radius * 0.75,
+                                App.Vector(x - offset, y, z))
+        return tip1.fuse(tip2)
+
+    else:  # "claw" (default) — a small sphere + inward-curving cone cap
+        sphere = Part.makeSphere(radius, shaft_top_center)
+        # Cone that tapers inward: base radius = prong radius, tip = 0
+        # oriented toward the stone centre (origin), so it points inward
+        cone_h = radius * 1.5
+        # Direction from prong tip toward ring centre (inward)
+        toward_centre = App.Vector(-x, -y, 0)
+        length = math.sqrt(x * x + y * y)
+        if length > 0.001:
+            toward_centre = App.Vector(
+                toward_centre.x / length,
+                toward_centre.y / length,
+                0
+            )
+        else:
+            toward_centre = App.Vector(0, 0, 1)
+        cap = Part.makeCone(radius, 0, cone_h, shaft_top_center, toward_centre)
+        return sphere.fuse(cap)
+
+
+def create_prongs_shape(count, radius, height, radial_distance, z_offset,
+                         prong_style="claw", orientation="radial",
+                         placement_plane="XY", angles_deg=None):
+    """
+    Build all prong shapes.
+
+    Parameters driven by COCO annotation geometry (never hardcoded here):
+      angles_deg      — per-prong placement angles (degrees) derived from the
+                        pixel positions of individual prong bboxes relative to
+                        the stone centre in the top-view annotation.
+                        If None, falls back to an even distribution.
+      orientation     — "radial" | "vertical" (from bbox aspect-ratio analysis)
+      placement_plane — "XY" | "XZ" (from which view prongs are visible)
+
+    Parameters driven by semantic extraction:
+      prong_style     — "claw" | "round_tip" | "flat" | "double_claw"
+                        controls tip geometry, not placement.
+    """
+    # Build angle list — use annotation-derived angles when available,
+    # otherwise distribute evenly (still no hardcoded assumptions about style).
+    if angles_deg and len(angles_deg) >= count:
+        angles = angles_deg[:count]
+    elif angles_deg and len(angles_deg) > 0:
+        # Annotation had fewer angles than expected count; use what we have
+        # and fill the rest evenly from the last angle
+        step = 360.0 / count
+        start = angles_deg[-1] + step if angles_deg else 0.0
+        extra = [start + i * step for i in range(count - len(angles_deg))]
+        angles = list(angles_deg) + extra
+    else:
+        # No annotation angles at all — distribute evenly (no style assumptions)
+        step = 360.0 / count
+        angles = [i * step for i in range(count)]
 
     prongs_list = []
-    for angle in angles:
-        rad = math.radians(angle)
+    for angle_deg in angles:
+        rad = math.radians(angle_deg)
         x   = radial_distance * math.cos(rad)
         y   = radial_distance * math.sin(rad)
-        post = Part.makeCylinder(radius, height,
-                                  App.Vector(x, y, z_offset), App.Vector(0, 0, 1))
-        tip  = Part.makeSphere(radius, App.Vector(x, y, z_offset + height))
-        prongs_list.append(post.fuse(tip))
+
+        shaft = _make_prong_shaft(radius, height, z_offset, x, y,
+                                   orientation, placement_plane)
+
+        # Compute the shaft tip centre for tip attachment
+        if placement_plane == "XZ":
+            tip_center = App.Vector(x, 0, y + height / 2.0)
+        else:
+            tip_center = App.Vector(x, y, z_offset + height)
+
+        tip = _make_prong_tip(prong_style, radius, tip_center)
+
+        prong = shaft.fuse(tip)
+        prongs_list.append(prong)
 
     if not prongs_list:
         return None
@@ -382,7 +490,11 @@ def main():
                     radius          = params.get("radius",          0.4),
                     height          = params.get("height",          3.0),
                     radial_distance = params.get("radial_distance", 3.0),
-                    z_offset        = params.get("z_offset",        11.5)
+                    z_offset        = params.get("z_offset",        11.5),
+                    prong_style     = params.get("prong_style",     "claw"),
+                    orientation     = params.get("orientation",     "radial"),
+                    placement_plane = params.get("placement_plane", "XY"),
+                    angles_deg      = params.get("angles_deg",      None),
                 )
                 if shape:
                     metal_shapes.append(shape)

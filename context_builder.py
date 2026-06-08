@@ -130,12 +130,42 @@ def build_context(geometry: dict, semantics: dict) -> dict:
         prong_rad = prong_geom.get("width", 0.8) / 2.0
         if not (0.1 < prong_rad <= 1.5):
             prong_rad = 0.4
+
+        # Annotation-derived placement geometry — these come from coco_parser
+        # and are never hardcoded here.
+        orientation     = prong_geom.get("orientation",     "radial")
+        placement_plane = prong_geom.get("placement_plane", "XY")
+        prong_angles    = prong_geom.get("prong_angles_deg", [])
+
+        # If no per-prong angles were derived from the annotation (e.g. only a
+        # combined prong bbox was present), distribute them evenly.
+        if not prong_angles:
+            step = 360.0 / prong_count
+            if prong_count == 4:
+                prong_angles = [45.0, 135.0, 225.0, 315.0]
+            elif prong_count == 6:
+                prong_angles = [30.0, 90.0, 150.0, 210.0, 270.0, 330.0]
+            elif prong_count == 8:
+                prong_angles = [i * step for i in range(prong_count)]
+            else:
+                prong_angles = [i * step for i in range(prong_count)]
+            logging.info(
+                f"No per-prong angles from annotation; using evenly distributed "
+                f"angles for {prong_count} prongs: {prong_angles}"
+            )
+
         context["head"]["prongs"] = {
             "count":           prong_count,
             "radius":          prong_rad,
             "height":          stone_height + 1.0,
             "radial_distance": stone_width / 2.0,
-            "z_offset":        prong_z
+            "z_offset":        prong_z,
+            # Semantic — drives tip shape in freecad_toolkit
+            "prong_style":     semantics.get("prong_style", "claw"),
+            # Annotation-derived — drives placement, never hardcoded
+            "orientation":     orientation,
+            "placement_plane": placement_plane,
+            "angles_deg":      prong_angles,
         }
 
     # ── Halo — only if annotated ───────────────────────────────────────────────

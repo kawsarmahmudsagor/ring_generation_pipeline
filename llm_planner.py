@@ -47,7 +47,10 @@ The tool library specifications are:
    - height (float): length of prong wires in mm.
    - radial_distance (float): distance from ring center to prongs in mm.
    - z_offset (float): starting height of the prongs in mm.
-
+   - prong_style (str): tip shape — "claw" | "round_tip" | "flat" | "double_claw" (from semantics).
+   - orientation (str): "radial" | "vertical" (derived from annotation bbox geometry).
+   - placement_plane (str): "XY" | "XZ" (derived from annotation; which plane prongs occupy).
+   - angles_deg (list of float): per-prong placement angles in degrees (from annotation centroids).
 6. "create_halo"  [only if halo key present in context]
    - stone_count (int): number of accent stones in the halo.
    - stone_size (float): diameter of individual halo stones in mm.
@@ -140,7 +143,13 @@ def generate_rule_based_plan(context: dict) -> list:
                 "radius":          float(p.get("radius",          0.4)),
                 "height":          float(p.get("height",          3.0)),
                 "radial_distance": float(p.get("radial_distance", 3.0)),
-                "z_offset":        float(p.get("z_offset",        11.5))
+                "z_offset":        float(p.get("z_offset",        11.5)),
+                # Semantic — tip geometry
+                "prong_style":     p.get("prong_style",     "claw"),
+                # Annotation-derived — placement geometry (never hardcoded)
+                "orientation":     p.get("orientation",     "radial"),
+                "placement_plane": p.get("placement_plane", "XY"),
+                "angles_deg":      p.get("angles_deg",      []),
             }
         })
 

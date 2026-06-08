@@ -18,12 +18,18 @@ Respond with a raw JSON object only. Do not wrap it in markdown code blocks. The
   "shank_style": "Pave" | "Plain" | "Split-Shank" | "Bypass" | "Tapered",
   "shoulders": "Pave" | "Plain" | "Cathedral",
   "prong_count": 4 | 6 | 8,
+  "prong_style": "claw" | "round_tip" | "flat" | "double_claw",
   "symmetry": "Bilateral" | "Radial" | "Asymmetrical"
 }
 
 Rules:
 - Do NOT include halo, gallery, bridge, or any structural component fields — those come from geometry annotations.
 - prong_count must be one of 4, 6, or 8.
+- prong_style:
+    "claw"        → tapered prong that curves inward over the stone girdle (most common solitaire style)
+    "round_tip"   → straight cylindrical prong with a ball/dome at the tip
+    "flat"        → flat tab or blade prong (bezel-like flat cap)
+    "double_claw" → forked/split tip, two tines gripping the stone
 - Provide your best estimate based on the visual details.
 - Respond with valid JSON only. Do not explain or write anything else."""
 
@@ -41,6 +47,7 @@ def extract_semantics(image_path: str) -> dict:
         "shank_style":       "Plain",
         "shoulders":         "Plain",
         "prong_count":       4,
+        "prong_style":       "claw",
         "symmetry":          "Bilateral"
     }
 
@@ -74,6 +81,8 @@ def extract_semantics(image_path: str) -> dict:
                 parsed[k] = v
         if parsed.get("prong_count") not in (4, 6, 8):
             parsed["prong_count"] = default_semantics["prong_count"]
+        if parsed.get("prong_style") not in ("claw", "round_tip", "flat", "double_claw"):
+            parsed["prong_style"] = default_semantics["prong_style"]
 
         return parsed
 
