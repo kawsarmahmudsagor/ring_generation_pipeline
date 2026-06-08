@@ -8,13 +8,7 @@
       "profile_type": "court"
     },
     "shoulder": {
-      "enabled": true,
       "style": "plain"
-    },
-    "side_stones": {
-      "enabled": false,
-      "stone_size": 1.3,
-      "stone_count": 10
     }
   },
   "head": {
@@ -23,41 +17,20 @@
       "width": 7.35708270307837,
       "length": 7.35708270307837,
       "height": 6.180219897523485,
-      "z_offset": 16.6902220324509
-    },
-    "gallery": {
-      "enabled": true,
-      "style": "solitaire",
-      "height": 6.3902220324509,
-      "width": 7.75708270307837,
       "z_offset": 10.3
-    },
-    "bridge": {
-      "enabled": false,
-      "height": 1.2,
-      "z_offset": 9.8
     },
     "prongs": {
       "count": 4,
       "radius": 0.4,
-      "height": 8.715638343296328,
+      "height": 7.180219897523485,
       "radial_distance": 3.678541351539185,
-      "z_offset": 16.1902220324509
-    },
-    "halo": {
-      "enabled": false,
-      "stone_count": 20,
-      "stone_size": 1.2,
-      "radial_distance": 4.578541351539185,
-      "z_offset": 16.6902220324509
+      "z_offset": 9.8
     }
   },
   "style": {
     "ring_style": "Solitaire",
     "setting_type": "Prong",
     "center_stone_cut": "Round",
-    "halo": "No",
-    "gallery": "Yes",
     "shank_style": "Plain",
     "shoulders": "Plain",
     "prong_count": 4,

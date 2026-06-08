@@ -8,10 +8,10 @@
       "iou": 1.0
     },
     "center_stone": {
-      "iou_top": 0.9996891820008165,
-      "width_error_mm": 0.0,
-      "iou_side": 0.957202531736517,
-      "height_error_mm": 8.881784197001252e-16,
+      "iou_top": 0.9996891820008167,
+      "width_error_mm": 1.7763568394002505e-15,
+      "iou_side": 0.957202531736516,
+      "height_error_mm": 2.6645352591003757e-15,
       "z_offset_error_mm": 0.0
     }
   },
