@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import sys
-
 import config
 from coco_parser import parse_geometry
 from semantic_extractor import extract_semantics
@@ -14,7 +13,6 @@ from validator import validate_projection
 
 os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 log_file_path = os.path.join(config.OUTPUT_DIR, "pipeline_execution.log")
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -23,6 +21,29 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
+
+# Minimum physical values to prevent degenerate geometry
+_PARAM_MINIMUMS = {
+    "height": 0.5,
+    "width": 0.5,
+    "length": 0.5,
+    "thickness": 0.2,
+    "radius": 0.1,
+    "z_offset": 0.0,
+}
+
+
+def _clamp_param(section: str, component: str, param: str, value: float) -> float:
+    """Clamp a context parameter to its physical minimum."""
+    minimum = _PARAM_MINIMUMS.get(param, None)
+    if minimum is not None and value < minimum:
+        logging.warning(
+            f"Clamped context.{section}.{component}.{param}: {value:.4f} -> {minimum:.4f} "
+            f"(below physical minimum)"
+        )
+        return minimum
+    return value
+
 
 def run_pipeline(image_path: str, coco_path: str) -> bool:
     """Runs the complete ring generation pipeline with iterative refinement."""
@@ -65,11 +86,12 @@ def run_pipeline(image_path: str, coco_path: str) -> bool:
 
     # Step 4: Iterative Planning, Execution, and Validation Loop (Refinement)
     logging.info("[Step 4/5] Entering CAD Execution & Projection Refinement Loop...")
-    
+
     iteration = 0
     success = False
     final_plan = []
-    
+    prev_adjustments = None  # track to detect stalled loop
+
     while iteration < config.REFINEMENT_MAX_ITERATIONS:
         iteration += 1
         logging.info(f"--- Refinement Loop Iteration {iteration}/{config.REFINEMENT_MAX_ITERATIONS} ---")
@@ -108,33 +130,59 @@ def run_pipeline(image_path: str, coco_path: str) -> bool:
             logging.info(f"Validation succeeded on iteration {iteration}! Bounding boxes aligned within thresholds.")
             success = True
             break
-        
+
         # 4D: Refinement (Apply adjustments)
         adjustments = report.get("adjustments", {})
         if not adjustments:
             logging.warning("Validation failed but no adjustment recommendations were generated. Stopping loop.")
             break
-            
+
+        # FIX: Detect stalled loop — if adjustments are identical to the previous iteration
+        # (all deltas < 1e-6), the validator is producing no-op corrections and we should stop.
+        if prev_adjustments is not None:
+            all_same = True
+            for section, components in adjustments.items():
+                for component, params in components.items():
+                    for param, offset in params.items():
+                        prev_offset = prev_adjustments.get(section, {}).get(component, {}).get(param, None)
+                        if prev_offset is None or abs(offset - prev_offset) > 1e-6:
+                            all_same = False
+                            break
+            if all_same:
+                logging.warning(
+                    "Adjustments are identical to the previous iteration (loop is stalled). "
+                    "This usually means the validator's reference frames are misaligned. "
+                    "Check that cad_stats component Z references match context z_offset definitions."
+                )
+                break
+
+        prev_adjustments = adjustments
         logging.info(f"Validation failed. Applying corrective adjustments: {json.dumps(adjustments, indent=2)}")
-        
+
         # Apply adjustments to hierarchical context dictionary
-        for section, components in adjustments.items():  # 'shank' or 'head'
+        for section, components in adjustments.items():   # 'shank' or 'head'
             if section in context:
                 for component, params in components.items():
                     if component in context[section]:
                         for param, offset in params.items():
                             if param in context[section][component]:
                                 old_val = context[section][component][param]
-                                context[section][component][param] = old_val + offset
-                                logging.info(f"Adjusted context.{section}.{component}.{param}: {old_val:.4f} -> {context[section][component][param]:.4f}")
-                        
+                                new_val = old_val + offset
+                                # FIX: Clamp to physical minimums so geometry stays valid
+                                new_val = _clamp_param(section, component, param, new_val)
+                                context[section][component][param] = new_val
+                                logging.info(
+                                    f"Adjusted context.{section}.{component}.{param}: "
+                                    f"{old_val:.4f} -> {new_val:.4f}  (delta={offset:+.4f})"
+                                )
+
         # Save adjusted context
         with open(os.path.join(config.OUTPUT_DIR, f"context_iteration_{iteration}.json"), 'w') as f:
             json.dump(context, f, indent=2)
 
     # Step 5: Wrap Up and Output
     logging.info("[Step 5/5] Finalizing pipeline outputs...")
-    
+
     # Save final plan and context
     with open(os.path.join(config.OUTPUT_DIR, "final_context.json"), 'w') as f:
         json.dump(context, f, indent=2)
@@ -144,12 +192,12 @@ def run_pipeline(image_path: str, coco_path: str) -> bool:
     if success:
         logging.info("=========================================")
         logging.info("Pipeline executed SUCCESSFULLY!")
-        logging.info(f"Manufacturable 3D Model:  {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring.stl'))}")
+        logging.info(f"Manufacturable 3D Model: {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring.stl'))}")
         logging.info(f"Metal 3D Model (separate): {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring_metal.stl'))}")
-        logging.info(f"Gems 3D Model (separate):  {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring_gems.stl'))}")
-        logging.info(f"FreeCAD Source File:      {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring.FCstd'))}")
-        logging.info(f"Execution Log File:       {os.path.abspath(log_file_path)}")
-        logging.info(f"Validation Report:        {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'validation_report.json'))}")
+        logging.info(f"Gems 3D Model (separate): {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring_gems.stl'))}")
+        logging.info(f"FreeCAD Source File: {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'ring.FCstd'))}")
+        logging.info(f"Execution Log File: {os.path.abspath(log_file_path)}")
+        logging.info(f"Validation Report: {os.path.abspath(os.path.join(config.OUTPUT_DIR, 'validation_report.json'))}")
         logging.info("=========================================")
         return True
     else:
@@ -163,6 +211,7 @@ def run_pipeline(image_path: str, coco_path: str) -> bool:
 
 def main():
     default_image = os.path.join(config.INPUT_DIR, "ring.png")
+
     # Fallback checks for common image extensions
     if not os.path.exists(default_image):
         for ext in [".jpg", ".jpeg", ".webp"]:
@@ -173,18 +222,17 @@ def main():
 
     parser = argparse.ArgumentParser(description="Iterative Ring Generation Pipeline (COCO to 3D CAD)")
     parser.add_argument(
-        "--image", 
+        "--image",
         default=default_image,
         help="Path to the input ring design image"
     )
     parser.add_argument(
-        "--coco", 
+        "--coco",
         default=config.COCO_FILE,
         help="Path to the single COCO annotation JSON file containing top and side view images"
     )
-    
     args = parser.parse_args()
-    
+
     if not os.path.exists(args.image) or not os.path.exists(args.coco):
         print(f"Error: Input files missing. Please ensure they exist:\n- {args.image}\n- {args.coco}")
         print("You can run 'python generate_sample_inputs.py' to generate dummy input files for testing.")
@@ -192,6 +240,7 @@ def main():
 
     result = run_pipeline(args.image, args.coco)
     sys.exit(0 if result else 1)
+
 
 if __name__ == "__main__":
     main()

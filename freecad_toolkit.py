@@ -1,57 +1,278 @@
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def build_context(geometry: dict, semantics: dict) -> dict:
+    """
+    Merges geometry dimensions and semantic attributes into a unified design context.
+
+    Z-COORDINATE CONVENTION (single source of truth):
+    ─────────────────────────────────────────────────
+    The FreeCAD world has the ring band as a torus in the XZ plane, finger-hole
+    along Y.  Therefore:
+
+        Z = 0           →  geometric centre of the band (ring's equator)
+        Z = +outer_r    →  top of the band (where gallery attaches)
+        Z = -outer_r    →  bottom of the band
+
+    ALL z_offset values stored in this context are the BASE (bottom) Z of the
+    component in that world frame.
+
+    CRITICALLY: we do NOT trust the coco_parser's pixel-derived z_offset for
+    vertical placement.  A 2D side-view image provides no absolute Z anchor —
+    pixel-Y can only tell us relative heights, not where Z=0 sits.  We therefore
+    derive every vertical position from first principles using the band geometry
+    and the stone's physical height (which IS reliably measured from pixels via
+    scale_side).
+    """
+    logging.info("Building unified ring design context...")
+
+    shank_geom       = geometry.get("shank", {})
+    head_geom        = geometry.get("head",  {})
+    band_geom        = shank_geom.get("band", {})
+    stone_geom       = head_geom.get("center_stone", {})
+    prong_geom       = head_geom.get("prongs", {})
+    halo_geom        = head_geom.get("halo",  {})
+    gallery_geom     = head_geom.get("gallery", {})
+    bridge_geom      = head_geom.get("bridge", {})
+    shoulder_geom    = shank_geom.get("shoulder", {})
+    side_stones_geom = shank_geom.get("side_stones", {})
+
+    # ── 1. Band ────────────────────────────────────────────────────────────────
+    inner_radius = band_geom.get("inner_radius", 8.5)
+    width        = band_geom.get("width",        2.5)
+    thickness    = band_geom.get("thickness",    1.8)
+    outer_radius = inner_radius + thickness       # e.g. 10.3 mm
+
+    # ── 2. Center stone (XY dimensions only from COCO; Z from geometry) ───────
+    stone_cut    = semantics.get("center_stone_cut", "Round").lower()
+    stone_width  = stone_geom.get("width",  6.0)
+    stone_length = stone_geom.get("length", 6.0)
+    stone_height = stone_geom.get("height", 3.8)
+
+    if stone_cut == "round":
+        stone_length = stone_width   # enforce circular constraint
+
+    # Clamp absurdly small/large values from noisy annotations
+    stone_width  = max(2.0, min(stone_width,  20.0))
+    stone_height = max(1.0, min(stone_height, 15.0))
+
+    # ── 3. Gallery height (from COCO if available, else from stone geometry) ──
+    # Gallery spans from the band top (outer_radius) up to where the stone sits.
+    # A typical solitaire gallery is 40-60 % of the stone height.
+    parsed_gallery_h = gallery_geom.get("height", None)
+    if parsed_gallery_h and 0.5 < parsed_gallery_h < 20.0:
+        gallery_h = parsed_gallery_h
+    else:
+        gallery_h = max(1.5, stone_height * 0.50)   # sensible default
+
+    # ── 4. Derive all Z offsets from first principles ─────────────────────────
+    #
+    #   gallery_z  = outer_radius          (gallery sits on top of the band)
+    #   stone_z    = gallery_z + gallery_h (stone base is on top of gallery)
+    #   prong_z    = stone_z  - 0.5        (prongs wrap around girdle)
+    #   bridge_z   = outer_radius - 0.5    (bridge just below band top)
+    #   halo_z     = stone_z               (halo at stone base level)
+
+    gallery_z = outer_radius
+    stone_z   = gallery_z + gallery_h
+    prong_z   = stone_z   - 0.5
+    bridge_z  = outer_radius - 0.5
+    halo_z    = stone_z
+
+    logging.info(
+        f"Z layout → band_top={outer_radius:.2f}  gallery:[{gallery_z:.2f}→{gallery_z+gallery_h:.2f}]  "
+        f"stone_base={stone_z:.2f}  stone_top={stone_z+stone_height:.2f}"
+    )
+
+    # ── 5. Prongs ──────────────────────────────────────────────────────────────
+    prong_count = int(semantics.get("prong_count", 4))
+    if prong_count not in [4, 6, 8]:
+        prong_count = 4
+
+    prong_rad = prong_geom.get("width", 0.8) / 2.0
+    if not (0.1 < prong_rad <= 1.5):
+        prong_rad = 0.4
+
+    # Prong height: must reach from prong_z to at least stone top + 0.5 mm tip
+    prong_h = stone_height + 1.0
+    prong_radial_dist = stone_width / 2.0
+
+    # ── 6. Halo ────────────────────────────────────────────────────────────────
+    has_halo      = semantics.get("halo", "No").lower() == "yes"
+    halo_stone_sz = halo_geom.get("width", 1.2)
+    if not (0.3 < halo_stone_sz <= 3.0):
+        halo_stone_sz = 1.2
+    halo_radial_dist  = (stone_width / 2.0) + (halo_stone_sz / 2.0) + 0.3
+    halo_stone_count  = max(8, int((2 * 3.14159 * halo_radial_dist) / (halo_stone_sz + 0.2)))
+
+    # ── 7. Bridge ──────────────────────────────────────────────────────────────
+    has_bridge = "bridge" in head_geom or semantics.get("ring_style", "").lower() == "cathedral"
+    bridge_h   = max(0.8, bridge_geom.get("height", 1.2))
+
+    # ── 8. Shoulder / side stones ─────────────────────────────────────────────
+    has_shoulder    = "shoulder" in shank_geom
+    has_side_stones = (
+        "side_stones" in shank_geom
+        or semantics.get("shank_style", "").lower() == "pave"
+    )
+    side_stone_size = side_stones_geom.get("width", 1.3)
+    if not (0.3 < side_stone_size <= 3.0):
+        side_stone_size = 1.3
+
+    # ── Compile ────────────────────────────────────────────────────────────────
+    context = {
+        "shank": {
+            "band": {
+                "inner_radius": inner_radius,
+                "width":        width,
+                "thickness":    thickness,
+                "outer_radius": outer_radius,
+                "profile_type": "court"
+            },
+            "shoulder": {
+                "enabled": has_shoulder,
+                "style":   semantics.get("shoulders", "Plain").lower()
+            },
+            "side_stones": {
+                "enabled":     has_side_stones,
+                "stone_size":  side_stone_size,
+                "stone_count": 10
+            }
+        },
+        "head": {
+            "center_stone": {
+                "cut":      stone_cut,
+                "width":    stone_width,
+                "length":   stone_length,
+                "height":   stone_height,
+                "z_offset": stone_z       # base Z of stone, derived from geometry
+            },
+            "gallery": {
+                "enabled":  True,
+                "style":    semantics.get("ring_style", "cathedral").lower(),
+                "height":   gallery_h,
+                "width":    stone_width + 0.4,
+                "z_offset": gallery_z     # = outer_radius, the band top
+            },
+            "bridge": {
+                "enabled":  has_bridge,
+                "height":   bridge_h,
+                "z_offset": bridge_z
+            },
+            "prongs": {
+                "count":           prong_count,
+                "radius":          prong_rad,
+                "height":          prong_h,
+                "radial_distance": prong_radial_dist,
+                "z_offset":        prong_z
+            },
+            "halo": {
+                "enabled":         has_halo,
+                "stone_count":     halo_stone_count,
+                "stone_size":      halo_stone_sz,
+                "radial_distance": halo_radial_dist,
+                "z_offset":        halo_z
+            }
+        },
+        "style": semantics,
+        "meta":  geometry.get("meta", {})
+    }
+
+    return context
+ENDOFFILE
+Output
+
+exit code 0
+Done
+Now fix freecad_toolkit.py — the gem shape convention must be 100% clear, and we also need to verify the gallery actually physically connects to the band. The gallery needs to taper outward at the base to meet the band's outer radius:
+
+
+Write definitive freecad_toolkit.py with correct gallery that actually connects band to stone
+Write definitive freecad_toolkit.py with correct gallery that actually connects band to stone
+
+Write definitive freecad_toolkit.py with correct gallery that actually connects band to stone
+bash
+
+cat > /home/claude/freecad_toolkit.py << 'ENDOFFILE'
 import sys
 import os
 import json
 import math
-
 import FreeCAD as App
 import Part
 import Mesh
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Z-COORDINATE CONTRACT
+# ─────────────────────────────────────────────────────────────────────────────
+# The ring band is a torus in the XZ plane; the finger hole runs along Y.
+#
+#   Z =  0           → ring geometric centre (equator)
+#   Z = +outer_r     → top of the band   ← gallery base attaches here
+#   Z = -outer_r     → bottom of the band
+#
+# Every component's z_offset parameter = the BASE (lowest Z) of that component.
+# The gem shape is built with pavilion tip at Z=0, table at Z=height,
+# then translated so the pavilion tip lands at z_offset.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def create_gem_shape(cut, width, length, height):
     """
-    Creates a parametric 3D gemstone shape.
-    Table/girdle is centered at (0,0,0).
+    Gem built from Z=0 (pavilion tip / base) to Z=height (table / top).
+    Caller translates by z_offset to place the base at the correct world Z.
     """
     cut = cut.lower()
-    r = width / 2.0
-    
-    crown_h = height * 0.25
-    girdle_h = height * 0.08
-    pavilion_h = height * 0.67
-    
-    crown = Part.makeCone(r, r * 0.55, crown_h, App.Vector(0, 0, 0), App.Vector(0, 0, 1))
-    girdle = Part.makeCylinder(r, girdle_h, App.Vector(0, 0, -girdle_h), App.Vector(0, 0, 1))
-    pavilion = Part.makeCone(0.05, r, pavilion_h, App.Vector(0, 0, -girdle_h - pavilion_h), App.Vector(0, 0, 1))
-    
-    gem_shape = crown.fuse(girdle).fuse(pavilion)
-    
+    r   = width / 2.0
+
+    pavilion_h = height * 0.60
+    girdle_h   = height * 0.08
+    crown_h    = height * 0.32
+
+    pavilion = Part.makeCone(0.05, r, pavilion_h,
+                              App.Vector(0, 0, 0), App.Vector(0, 0, 1))
+    girdle   = Part.makeCylinder(r, girdle_h,
+                                  App.Vector(0, 0, pavilion_h), App.Vector(0, 0, 1))
+    crown    = Part.makeCone(r, r * 0.55, crown_h,
+                              App.Vector(0, 0, pavilion_h + girdle_h), App.Vector(0, 0, 1))
+
+    gem = pavilion.fuse(girdle).fuse(crown)
+
     if cut == "oval":
         scale_y = length / width if width > 0 else 1.0
-        gem_shape.scale(App.Vector(1.0, scale_y, 1.0))
-    elif cut in ["princess", "cushion", "emerald"]:
-        if cut == "princess":
-            w2 = width / 2.0
-            l2 = length / 2.0
-            crown_box = Part.makeWedge(-w2, -l2, 0, w2, l2, crown_h, -w2*0.6, -l2*0.6, -w2*0.6, w2*0.6, l2*0.6, -w2*0.6)
-            girdle_box = Part.makeBox(width, length, girdle_h, App.Vector(-w2, -l2, -girdle_h))
-            pavilion_pyr = Part.makeWedge(-w2, -l2, -girdle_h-pavilion_h, w2, l2, -girdle_h, 0, 0, 0, 0, 0, 0)
-            gem_shape = crown_box.fuse(girdle_box).fuse(pavilion_pyr)
-        elif cut == "cushion":
-            scale_y = length / width if width > 0 else 1.0
-            gem_shape.scale(App.Vector(1.0, scale_y, 1.0))
-            
-    return gem_shape
+        gem.scale(App.Vector(1.0, scale_y, 1.0))
+    elif cut == "princess":
+        w2, l2 = width / 2.0, length / 2.0
+        pav  = Part.makeWedge(-w2, -l2, 0,  w2,  l2, pavilion_h,  0, 0, 0, 0, 0, 0)
+        gird = Part.makeBox(width, length, girdle_h,
+                             App.Vector(-w2, -l2, pavilion_h))
+        crn  = Part.makeWedge(-w2, -l2, pavilion_h + girdle_h,
+                                w2,  l2, pavilion_h + girdle_h + crown_h,
+                               -w2*0.6, -l2*0.6, -w2*0.6, w2*0.6, l2*0.6, -w2*0.6)
+        gem  = pav.fuse(gird).fuse(crn)
+    elif cut == "cushion":
+        scale_y = length / width if width > 0 else 1.0
+        gem.scale(App.Vector(1.0, scale_y, 1.0))
+
+    return gem
 
 
 def create_band_shape(inner_radius, width, thickness, profile_type):
     """
-    Creates the ring band centered at the origin along the Y-axis.
+    Ring band: torus in the XZ plane, finger hole along Y.
+    Spans Y from -width/2 to +width/2.
+    The metal ring cross-section sits in XZ; outer radius = inner_radius + thickness.
     """
     outer_radius = inner_radius + thickness
-    outer_cyl = Part.makeCylinder(outer_radius, width, App.Vector(0, -width/2.0, 0), App.Vector(0, 1, 0))
-    inner_cyl = Part.makeCylinder(inner_radius, width, App.Vector(0, -width/2.0, 0), App.Vector(0, 1, 0))
+    outer_cyl = Part.makeCylinder(outer_radius, width,
+                                   App.Vector(0, -width/2.0, 0), App.Vector(0, 1, 0))
+    inner_cyl = Part.makeCylinder(inner_radius, width,
+                                   App.Vector(0, -width/2.0, 0), App.Vector(0, 1, 0))
     band = outer_cyl.cut(inner_cyl)
-    
+
     if profile_type == "court":
         outer_edges = []
         for edge in band.Edges:
@@ -61,23 +282,119 @@ def create_band_shape(inner_radius, width, thickness, profile_type):
                     outer_edges.append(edge)
             except:
                 pass
-        
         if len(outer_edges) >= 2:
             try:
-                fillet_rad = thickness * 0.25
-                band = band.makeFillet(fillet_rad, outer_edges)
+                band = band.makeFillet(thickness * 0.25, outer_edges)
             except Exception as e:
-                print(f"Fillet failed: {e}. Using flat band profile.")
-                
+                print(f"Fillet failed: {e}")
     return band
+
+
+def create_gallery_shape(style, width, height, z_offset,
+                          inner_radius=8.5, thickness=1.8, band_width=2.5):
+    """
+    Open-basket gallery connecting band top to stone seat.
+
+    z_offset  = band outer_radius (= band top)
+    z_offset + height = stone base
+
+    The gallery MUST touch the band at z_offset.  To do this we build:
+      • A tapered cone/frustum from (r=outer_radius, z=z_offset) narrowing
+        to (r=gallery_r, z=z_offset+height) — this is the cathedral shoulder.
+      • A stone-seat ring at the top.
+    """
+    outer_radius = inner_radius + thickness
+    gallery_r    = width / 2.0          # radius of the stone seat ring
+
+    # ── Stone seat ring at the top ─────────────────────────────────────────
+    seat_h     = 0.5
+    seat_top_z = z_offset + height
+    seat_outer = Part.makeCylinder(gallery_r, seat_h,
+                                    App.Vector(0, 0, seat_top_z - seat_h),
+                                    App.Vector(0, 0, 1))
+    seat_inner = Part.makeCylinder(gallery_r - 0.4, seat_h,
+                                    App.Vector(0, 0, seat_top_z - seat_h),
+                                    App.Vector(0, 0, 1))
+    seat_ring  = seat_outer.cut(seat_inner)
+    gallery    = seat_ring
+
+    # ── Cathedral shoulders: tapered frustum from band edge to seat ────────
+    # We build 4 thin tapered pillars at 45°/135°/225°/315° (prong positions)
+    # This is more realistic than a solid cone and matches a solitaire basket.
+    w_pillar = max(0.6, thickness * 0.35)
+
+    for angle_deg in [45, 135, 225, 315]:
+        angle  = math.radians(angle_deg)
+        # Start point on the band top circle (XZ plane, at z=z_offset)
+        x_bot  = outer_radius * math.cos(angle)
+        z_bot  = outer_radius * math.sin(angle)   # <-- uses Z as "up"
+        # Wait — the band top is the set of points (x,0,z) with x²+z²=outer_r²
+        # and z > 0 specifically: the TOP of the band is at z = +outer_radius
+        # That single point is (0, 0, outer_radius). The band top is a CIRCLE
+        # in the XZ plane. We want to run pillars from the circumference of this
+        # circle up to the seat ring.
+        #
+        # Since the seat ring is centred on the Z axis (small r = gallery_r ≈ 3.9mm)
+        # and the band top circle has r = outer_radius ≈ 10.3mm, the pillars must
+        # bridge from radius 10.3 DOWN to radius 3.9 — but they do so at different
+        # XZ angles.  The pillar for angle=45° starts at:
+        #   (outer_r * cos45, 0, outer_r * sin45) = (7.28, 0, 7.28) in XYZ
+        # and ends at:
+        #   (gallery_r * cos45, 0, z_offset + height) = (2.76, 0, 15.3)
+        #
+        # This works ONLY if z_offset = outer_radius AND the pillars truly start
+        # at the band metal.  Let's verify: x_bot²+z_bot² = outer_r²  ✓
+        # The pillar starts embedded in the band and rises to the seat.
+
+        x_top  = gallery_r * math.cos(angle)
+        z_top  = gallery_r * math.sin(angle)
+        z_top_world = seat_top_z - seat_h   # top of pillar = bottom of seat
+
+        # Build pillar as a lofted box approximation: a thin rectangular extrusion
+        # from bottom point to top point in 3D
+        dx = x_top - x_bot
+        dz = z_top_world - z_bot
+        length_3d = math.sqrt(dx*dx + dz*dz)
+        if length_3d < 0.1:
+            continue
+
+        # Create a thin box along the Z axis and then rotate/translate it
+        pillar = Part.makeBox(w_pillar, w_pillar, length_3d,
+                               App.Vector(-w_pillar/2.0, -w_pillar/2.0, 0))
+
+        # Rotate to point from (x_bot, 0, z_bot) toward (x_top, 0, z_top_world)
+        angle_pitch = math.degrees(math.atan2(dx, dz))
+        pillar.rotate(App.Vector(0, 0, 0), App.Vector(0, 1, 0), -angle_pitch)
+        pillar.translate(App.Vector(x_bot, 0, z_bot))
+
+        try:
+            gallery = gallery.fuse(pillar)
+        except Exception as e:
+            print(f"Pillar fuse failed at {angle_deg}°: {e}")
+
+    return gallery
+
+
+def create_bridge_shape(height, z_offset, inner_radius=8.5, band_width=2.5):
+    """Bridge across the under-gallery, flush with the band."""
+    w_bridge   = (inner_radius + 0.5) * 2.0
+    block      = Part.makeBox(w_bridge, band_width, height,
+                               App.Vector(-w_bridge/2.0, -band_width/2.0, z_offset))
+    finger_cyl = Part.makeCylinder(inner_radius, band_width + 1.0,
+                                    App.Vector(0, -band_width/2.0 - 0.5, 0),
+                                    App.Vector(0, 1, 0))
+    try:
+        return block.cut(finger_cyl)
+    except Exception as e:
+        print(f"Bridge cut failed: {e}. Returning block.")
+        return block
 
 
 def create_prongs_shape(count, radius, height, radial_distance, z_offset):
     """
-    Creates prongs distributed around the center stone.
+    Prong cylinders starting at z_offset (just below stone base) and
+    extending upward by height to grip the stone.
     """
-    prongs_list = []
-    
     if count == 4:
         angles = [45, 135, 225, 315]
     elif count == 6:
@@ -86,351 +403,224 @@ def create_prongs_shape(count, radius, height, radial_distance, z_offset):
         angles = [0, 45, 90, 135, 180, 225, 270, 315]
     else:
         angles = [45, 135, 225, 315]
-        
+
+    prongs_list = []
     for angle in angles:
         rad = math.radians(angle)
-        x = radial_distance * math.cos(rad)
-        y = radial_distance * math.sin(rad)
-        
-        post = Part.makeCylinder(radius, height, App.Vector(x, y, z_offset), App.Vector(0, 0, 1))
-        tip = Part.makeSphere(radius, App.Vector(x, y, z_offset + height))
-        prong = post.fuse(tip)
-        prongs_list.append(prong)
-        
-    if prongs_list:
-        fused = prongs_list[0]
-        for p in prongs_list[1:]:
-            fused = fused.fuse(p)
-        return fused
-    return None
+        x   = radial_distance * math.cos(rad)
+        y   = radial_distance * math.sin(rad)
+        post = Part.makeCylinder(radius, height,
+                                  App.Vector(x, y, z_offset), App.Vector(0, 0, 1))
+        tip  = Part.makeSphere(radius, App.Vector(x, y, z_offset + height))
+        prongs_list.append(post.fuse(tip))
+
+    if not prongs_list:
+        return None
+    fused = prongs_list[0]
+    for p in prongs_list[1:]:
+        fused = fused.fuse(p)
+    return fused
 
 
-def create_gallery_shape(style, width, height, z_offset, inner_radius=8.5, thickness=1.8, band_width=2.5):
-    """
-    Creates a realistic open-basket gallery underneath the center stone.
-    If style is cathedral, adds sweeping shoulders rising from the band.
-    """
-    r_outer = width / 2.0
-    r_inner = r_outer - 0.4
-    
-    # 1. Bezel collar / wire basket (top and bottom gallery wires)
-    # Top wire ring
-    top_h = 0.5
-    top_outer = Part.makeCylinder(r_outer, top_h, App.Vector(0, 0, z_offset + height - top_h), App.Vector(0, 0, 1))
-    top_inner = Part.makeCylinder(r_inner, top_h, App.Vector(0, 0, z_offset + height - top_h), App.Vector(0, 0, 1))
-    top_ring = top_outer.cut(top_inner)
-    
-    # Bottom wire ring (slightly tapered inwards)
-    bot_h = 0.4
-    bot_outer = Part.makeCylinder(r_outer - 0.3, bot_h, App.Vector(0, 0, z_offset), App.Vector(0, 0, 1))
-    bot_inner = Part.makeCylinder(r_inner - 0.3, bot_h, App.Vector(0, 0, z_offset), App.Vector(0, 0, 1))
-    bottom_ring = bot_outer.cut(bot_inner)
-    
-    gallery = top_ring.fuse(bottom_ring)
-    
-    # 2. Cathedral arches
-    if style == "cathedral":
-        outer_radius = inner_radius + thickness
-        
-        # Arch start position on the band (at 60 degrees)
-        angle = math.radians(60.0)
-        x_start = outer_radius * math.cos(angle)
-        z_start = outer_radius * math.sin(angle)
-        
-        # Arch start inner position (thickness displacement)
-        x_start_in = inner_radius * math.cos(angle)
-        z_start_in = inner_radius * math.sin(angle)
-        
-        # Arch end position at gallery bottom
-        x_end = r_outer - 0.2
-        z_end = z_offset + 0.2
-        
-        x_end_in = r_inner - 0.2
-        z_end_in = z_offset
-        
-        # Create polygon points in XZ plane
-        p1 = App.Vector(x_start, 0, z_start)
-        p2 = App.Vector(x_end, 0, z_end)
-        p3 = App.Vector(x_end_in, 0, z_end_in)
-        p4 = App.Vector(x_start_in, 0, z_start_in)
-        
-        try:
-            poly = Part.makePolygon([p1, p2, p3, p4, p1])
-            face = Part.Face(poly)
-            # Extrude along Y axis (slightly narrower than the band width)
-            w_shoulder = band_width * 0.8
-            arch_right = face.extrude(App.Vector(0, w_shoulder, 0))
-            # Center it along Y
-            arch_right.translate(App.Vector(0, -w_shoulder/2.0, 0))
-            
-            # Mirror to get the left arch
-            arch_left = arch_right.mirror(App.Vector(0,0,0), App.Vector(1,0,0))
-            
-            # Fuse arches to the gallery rings
-            gallery = gallery.fuse(arch_right).fuse(arch_left)
-        except Exception as e:
-            print(f"Cathedral arch creation failed: {e}. Falling back to simple pillars.")
-            w_shoulder = 1.8
-            
-            pillar = Part.makeBox(0.8, w_shoulder, z_offset - z_start, App.Vector(x_start - 0.4, -w_shoulder/2.0, z_start))
-            pillar_left = pillar.mirror(App.Vector(0,0,0), App.Vector(1,0,0))
-            gallery = gallery.fuse(pillar).fuse(pillar_left)
-            
-    return gallery
-
-
-def create_bridge_shape(height, z_offset, inner_radius=8.5, band_width=2.5):
-    """
-    Creates a metal bridge curving above the finger hole.
-    """
-    # Create a solid block that spans between the cathedral arches
-    w_bridge = (inner_radius + 0.5) * 2.0
-    block = Part.makeBox(w_bridge, band_width, height, App.Vector(-w_bridge/2.0, -band_width/2.0, z_offset))
-    
-    # Cut the bottom of the block with the finger hole cylinder so it curves flush
-    # The finger hole is along Y-axis, centered at origin (0,0,0)
-    finger_cyl = Part.makeCylinder(inner_radius, band_width + 1.0, App.Vector(0, -band_width/2.0 - 0.5, 0), App.Vector(0, 1, 0))
-    
-    try:
-        bridge = block.cut(finger_cyl)
-        return bridge
-    except Exception as e:
-        print(f"Bridge cut failed: {e}. Returning block.")
-        return block
-
-
-def create_side_stones_shape(stone_size, stone_count, inner_radius=8.5, thickness=1.8, band_width=2.5):
-    """
-    Creates small pavé stones distributed along the ring shoulders.
-    Returns fused gems shape.
-    """
-    r_placement = inner_radius + thickness - 0.2  # place slightly embedded in metal
-    gems_list = []
-    gem_h = stone_size * 0.6
-    
-    # Distribute stones on the shoulders (e.g. from 45 to 80 degrees on right, 100 to 135 on left)
+def create_side_stones_shape(stone_size, stone_count,
+                               inner_radius=8.5, thickness=1.8, band_width=2.5):
+    r_place    = inner_radius + thickness - 0.2
+    gems_list  = []
+    gem_h      = stone_size * 0.6
     half_count = max(1, stone_count // 2)
-    
-    # Angle ranges in degrees
-    right_angles = [45 + i * (35.0 / half_count) for i in range(half_count)]
-    left_angles = [100 + i * (35.0 / half_count) for i in range(half_count)]
-    
-    all_angles = right_angles + left_angles
-    
-    for angle in all_angles:
+    right_a    = [45 + i * (35.0 / half_count) for i in range(half_count)]
+    left_a     = [100 + i * (35.0 / half_count) for i in range(half_count)]
+
+    for angle in right_a + left_a:
         rad = math.radians(angle)
-        # In side view (XZ plane), the band circumference is in the XZ plane!
-        # Remember the finger hole axis is Y, so the ring circumference lies in the XZ plane.
-        x = r_placement * math.cos(rad)
-        z = r_placement * math.sin(rad)
-        y = 0.0  # centered along the band width
-        
+        x   = r_place * math.cos(rad)
+        z   = r_place * math.sin(rad)
         gem = create_gem_shape("round", stone_size, stone_size, gem_h)
-        
-        # Rotate gem so it points outward radially
-        # The default gem points along +Z. We want to rotate it around the Y axis by (angle - 90) degrees.
-        rot_angle = angle - 90.0
-        gem.rotate(App.Vector(0, 0, 0), App.Vector(0, 1, 0), rot_angle)
-        
-        # Translate to shoulder position
-        gem.translate(App.Vector(x, y, z))
+        gem.rotate(App.Vector(0, 0, 0), App.Vector(0, 1, 0), angle - 90.0)
+        gem.translate(App.Vector(x, 0.0, z))
         gems_list.append(gem)
-        
-    if gems_list:
-        fused = gems_list[0]
-        for g in gems_list[1:]:
-            fused = fused.fuse(g)
-        return fused
-    return None
+
+    if not gems_list:
+        return None
+    fused = gems_list[0]
+    for g in gems_list[1:]:
+        fused = fused.fuse(g)
+    return fused
 
 
 def create_halo_shape(stone_count, stone_size, radial_distance, z_offset):
-    """
-    Creates a halo of small stones and its metal mounting collar.
-    Returns (metal_shape, gem_shape).
-    """
-    w_base = stone_size * 1.3
-    h_base = stone_size * 0.8
-    r_outer = radial_distance + w_base/2.0
-    r_inner = radial_distance - w_base/2.0
-    
-    outer_cyl = Part.makeCylinder(r_outer, h_base, App.Vector(0, 0, z_offset - h_base), App.Vector(0, 0, 1))
-    inner_cyl = Part.makeCylinder(r_inner, h_base, App.Vector(0, 0, z_offset - h_base), App.Vector(0, 0, 1))
+    w_base       = stone_size * 1.3
+    h_base       = stone_size * 0.8
+    r_outer      = radial_distance + w_base / 2.0
+    r_inner      = radial_distance - w_base / 2.0
+    outer_cyl    = Part.makeCylinder(r_outer, h_base,
+                                      App.Vector(0, 0, z_offset - h_base), App.Vector(0, 0, 1))
+    inner_cyl    = Part.makeCylinder(r_inner, h_base,
+                                      App.Vector(0, 0, z_offset - h_base), App.Vector(0, 0, 1))
     metal_collar = outer_cyl.cut(inner_cyl)
-    
-    gems_list = []
-    gem_h = stone_size * 0.6
-    cutters_list = []
-    
+    gems_list    = []
+    gem_h        = stone_size * 0.6
+
     for i in range(stone_count):
         angle = i * (360.0 / stone_count)
-        rad = math.radians(angle)
-        x = radial_distance * math.cos(rad)
-        y = radial_distance * math.sin(rad)
-        
-        gem = create_gem_shape("round", stone_size, stone_size, gem_h)
+        rad   = math.radians(angle)
+        x, y  = radial_distance * math.cos(rad), radial_distance * math.sin(rad)
+        gem   = create_gem_shape("round", stone_size, stone_size, gem_h)
         gem.translate(App.Vector(x, y, z_offset))
         gems_list.append(gem)
-        
-        cutter = Part.makeCylinder(stone_size/2.0 + 0.1, h_base + 0.5, App.Vector(x, y, z_offset - h_base - 0.1), App.Vector(0, 0, 1))
-        cutters_list.append(cutter)
-        
-    for cutter in cutters_list:
+        cutter = Part.makeCylinder(stone_size / 2.0 + 0.1, h_base + 0.5,
+                                    App.Vector(x, y, z_offset - h_base - 0.1),
+                                    App.Vector(0, 0, 1))
         try:
             metal_collar = metal_collar.cut(cutter)
         except:
             pass
-            
+
     fused_gems = gems_list[0]
     for g in gems_list[1:]:
         fused_gems = fused_gems.fuse(g)
-        
     return metal_collar, fused_gems
 
 
 def main():
-    # Use default paths if no arguments are provided (e.g. running inside freecadcmd.exe)
     if len(sys.argv) < 3:
-        params_path = os.path.join("outputs", "temp_plan.json")
+        params_path   = os.path.join("outputs", "temp_plan.json")
         output_prefix = os.path.join("outputs", "ring")
-        print("No command-line arguments specified. Using default paths:")
-        print(f"- params_path: {params_path}")
-        print(f"- output_prefix: {output_prefix}")
+        print("No command-line arguments. Using defaults:")
+        print(f"  params_path:   {params_path}")
+        print(f"  output_prefix: {output_prefix}")
     else:
-        params_path = sys.argv[1]
+        params_path   = sys.argv[1]
         output_prefix = sys.argv[2]
-    
+
     if not os.path.exists(params_path):
-        print(f"Error: JSON file not found at {params_path}")
+        print(f"Error: {params_path} not found")
         sys.exit(1)
-        
-    try:
-        with open(params_path, 'r') as f:
-            plan = json.load(f)
-    except Exception as e:
-        print(f"Error reading plan: {e}")
-        sys.exit(1)
-        
+
+    with open(params_path, 'r') as f:
+        plan = json.load(f)
+
     print(f"Starting FreeCAD generation with {len(plan)} tool calls...")
-    
-    doc_name = "RingModel"
-    doc = App.newDocument(doc_name)
-    
+
+    doc = App.newDocument("RingModel")
+
     metal_shapes = []
-    gem_shapes = []
-    
-    # Store band inner radius & width to pass to sub-component functions
+    gem_shapes   = []
+
+    # First pass: read band parameters for downstream components
     band_inner_radius = 8.5
-    band_width = 2.5
-    band_thickness = 1.8
-    
-    # First pass: find band parameters
+    band_width        = 2.5
+    band_thickness    = 1.8
     for call in plan:
         if call.get("tool") == "create_band":
-            params = call.get("params", {})
-            band_inner_radius = params.get("inner_radius", 8.5)
-            band_width = params.get("width", 2.5)
-            band_thickness = params.get("thickness", 1.8)
+            p = call.get("params", {})
+            band_inner_radius = p.get("inner_radius", 8.5)
+            band_width        = p.get("width",        2.5)
+            band_thickness    = p.get("thickness",    1.8)
             break
-            
+
     component_shapes = {}
 
     for idx, call in enumerate(plan):
-        tool = call.get("tool")
+        tool   = call.get("tool")
         params = call.get("params", {})
         print(f"Executing step {idx+1}: {tool} with params {params}")
-        
+
         try:
             if tool == "create_band":
                 shape = create_band_shape(
-                    inner_radius=band_inner_radius,
-                    width=band_width,
-                    thickness=band_thickness,
-                    profile_type=params.get("profile_type", "court")
+                    inner_radius = band_inner_radius,
+                    width        = band_width,
+                    thickness    = band_thickness,
+                    profile_type = params.get("profile_type", "court")
                 )
                 metal_shapes.append(shape)
                 component_shapes["band"] = shape
-                
+
             elif tool == "create_gallery":
                 shape = create_gallery_shape(
-                    style=params.get("style", "cathedral"),
-                    width=params.get("width", 6.5),
-                    height=params.get("height", 3.0),
-                    z_offset=params.get("z_offset", 10.3),
-                    inner_radius=band_inner_radius,
-                    thickness=band_thickness,
-                    band_width=band_width
+                    style        = params.get("style",    "cathedral"),
+                    width        = params.get("width",    6.5),
+                    height       = params.get("height",   3.0),
+                    z_offset     = params.get("z_offset", 10.3),
+                    inner_radius = band_inner_radius,
+                    thickness    = band_thickness,
+                    band_width   = band_width
                 )
                 metal_shapes.append(shape)
                 component_shapes["gallery"] = shape
-                
+
             elif tool == "create_bridge":
                 shape = create_bridge_shape(
-                    height=params.get("height", 1.2),
-                    z_offset=params.get("z_offset", 10.0),
-                    inner_radius=band_inner_radius,
-                    band_width=band_width
+                    height       = params.get("height",   1.2),
+                    z_offset     = params.get("z_offset", 10.0),
+                    inner_radius = band_inner_radius,
+                    band_width   = band_width
                 )
                 metal_shapes.append(shape)
                 component_shapes["bridge"] = shape
-                
+
             elif tool == "create_center_stone":
-                shape = create_gem_shape(
-                    cut=params.get("cut", "round"),
-                    width=params.get("width", 6.0),
-                    length=params.get("length", 6.0),
-                    height=params.get("height", 3.8)
+                z_off  = params.get("z_offset", 12.0)
+                height = params.get("height",   3.8)
+                shape  = create_gem_shape(
+                    cut    = params.get("cut",    "round"),
+                    width  = params.get("width",  6.0),
+                    length = params.get("length", 6.0),
+                    height = height
                 )
-                shape.translate(App.Vector(0, 0, params.get("z_offset", 12.0)))
+                # Gem pavilion tip is at Z=0; translate so it sits at z_offset
+                shape.translate(App.Vector(0, 0, z_off))
                 gem_shapes.append(shape)
                 component_shapes["center_stone"] = shape
-                
+
             elif tool == "create_prongs":
                 shape = create_prongs_shape(
-                    count=params.get("count", 4),
-                    radius=params.get("radius", 0.4),
-                    height=params.get("height", 3.0),
-                    radial_distance=params.get("radial_distance", 3.0),
-                    z_offset=params.get("z_offset", 11.5)
+                    count           = params.get("count",           4),
+                    radius          = params.get("radius",          0.4),
+                    height          = params.get("height",          3.0),
+                    radial_distance = params.get("radial_distance", 3.0),
+                    z_offset        = params.get("z_offset",        11.5)
                 )
                 if shape:
                     metal_shapes.append(shape)
                     component_shapes["prongs"] = shape
-                
+
             elif tool == "create_halo":
-                metal_h, gem_h = create_halo_shape(
-                    stone_count=params.get("stone_count", 16),
-                    stone_size=params.get("stone_size", 1.2),
-                    radial_distance=params.get("radial_distance", 4.2),
-                    z_offset=params.get("z_offset", 12.0)
+                metal_h, gem_h_shape = create_halo_shape(
+                    stone_count     = params.get("stone_count",     16),
+                    stone_size      = params.get("stone_size",      1.2),
+                    radial_distance = params.get("radial_distance", 4.2),
+                    z_offset        = params.get("z_offset",        12.0)
                 )
                 metal_shapes.append(metal_h)
-                gem_shapes.append(gem_h)
+                gem_shapes.append(gem_h_shape)
                 try:
-                    component_shapes["halo"] = metal_h.fuse(gem_h)
+                    component_shapes["halo"] = metal_h.fuse(gem_h_shape)
                 except:
                     component_shapes["halo"] = metal_h
-                
+
             elif tool == "create_side_stones":
                 shape = create_side_stones_shape(
-                    stone_size=params.get("stone_size", 1.3),
-                    stone_count=params.get("stone_count", 10),
-                    inner_radius=band_inner_radius,
-                    thickness=band_thickness,
-                    band_width=band_width
+                    stone_size   = params.get("stone_size",  1.3),
+                    stone_count  = params.get("stone_count", 10),
+                    inner_radius = band_inner_radius,
+                    thickness    = band_thickness,
+                    band_width   = band_width
                 )
                 if shape:
                     gem_shapes.append(shape)
                     component_shapes["side_stones"] = shape
-                
+
             else:
-                print(f"Unknown tool call: {tool}")
-                
+                print(f"Unknown tool: {tool}")
+
         except Exception as err:
-            print(f"Step {idx+1} failed: {err}")
-            
+            print(f"Step {idx+1} ({tool}) failed: {err}")
+            import traceback; traceback.print_exc()
+
     print("Fusing CAD components...")
-    
+
     metal_fused = None
     if metal_shapes:
         metal_fused = metal_shapes[0]
@@ -438,8 +628,8 @@ def main():
             try:
                 metal_fused = metal_fused.fuse(s)
             except Exception as e:
-                print(f"Failed to fuse metal components: {e}. Adding individually.")
-        
+                print(f"Metal fuse error: {e}")
+
     gem_fused = None
     if gem_shapes:
         gem_fused = gem_shapes[0]
@@ -447,48 +637,37 @@ def main():
             try:
                 gem_fused = gem_fused.fuse(s)
             except Exception as e:
-                print(f"Failed to fuse gem components: {e}.")
-                
-    doc_objs_to_export = []
-    
+                print(f"Gem fuse error: {e}")
+
+    doc_objs = []
     if metal_fused:
         metal_obj = doc.addObject("Part::Feature", "RingMetal")
         metal_obj.Shape = metal_fused
-        doc_objs_to_export.append(metal_obj)
-        
+        doc_objs.append(metal_obj)
     if gem_fused:
         gem_obj = doc.addObject("Part::Feature", "RingGems")
         gem_obj.Shape = gem_fused
-        doc_objs_to_export.append(gem_obj)
-        
+        doc_objs.append(gem_obj)
+
     doc.recompute()
-    
+
     fcstd_path = f"{output_prefix}.FCstd"
     doc.saveAs(fcstd_path)
     print(f"Saved FreeCAD project to {fcstd_path}")
-    
-    metal_stl = f"{output_prefix}_metal.stl"
-    gem_stl = f"{output_prefix}_gems.stl"
-    combined_stl = f"{output_prefix}.stl"
-    
+
     if metal_fused:
-        Mesh.export([metal_obj], metal_stl)
-        print(f"Exported metal STL to {metal_stl}")
-        
+        Mesh.export([metal_obj], f"{output_prefix}_metal.stl")
+        print(f"Exported metal STL to {output_prefix}_metal.stl")
     if gem_fused:
-        Mesh.export([gem_obj], gem_stl)
-        print(f"Exported gems STL to {gem_stl}")
-        
-    if doc_objs_to_export:
-        Mesh.export(doc_objs_to_export, combined_stl)
-        print(f"Exported combined STL to {combined_stl}")
-        
-    stats = {
-        "components": {}
-    }
-    
-    # Save overall group bounds
-    for obj in doc_objs_to_export:
+        Mesh.export([gem_obj], f"{output_prefix}_gems.stl")
+        print(f"Exported gems STL to {output_prefix}_gems.stl")
+    if doc_objs:
+        Mesh.export(doc_objs, f"{output_prefix}.stl")
+        print(f"Exported combined STL to {output_prefix}.stl")
+
+    # ── Stats ──────────────────────────────────────────────────────────────────
+    stats = {"components": {}}
+    for obj in doc_objs:
         bbox = obj.Shape.BoundBox
         stats[obj.Name] = {
             "Xmin": bbox.XMin, "Xmax": bbox.XMax,
@@ -496,34 +675,33 @@ def main():
             "Zmin": bbox.ZMin, "Zmax": bbox.ZMax,
             "Xlen": bbox.XLength, "Ylen": bbox.YLength, "Zlen": bbox.ZLength
         }
-        
-    # Save individual component bounds
+
     for name, shape in component_shapes.items():
-        if shape:
-            if name == "band":
-                # Override with exact mathematical dimensions to bypass OpenCASCADE fillet bounding box calculation bug
-                true_outer_r = band_inner_radius + band_thickness
-                stats["components"][name] = {
-                    "Xmin": -true_outer_r, "Xmax": true_outer_r,
-                    "Ymin": -band_width/2.0, "Ymax": band_width/2.0,
-                    "Zmin": -true_outer_r, "Zmax": true_outer_r,
-                    "Xlen": 2.0 * true_outer_r, "Ylen": band_width, "Zlen": 2.0 * true_outer_r
-                }
-            else:
-                bbox = shape.BoundBox
-                stats["components"][name] = {
-                    "Xmin": bbox.XMin, "Xmax": bbox.XMax,
-                    "Ymin": bbox.YMin, "Ymax": bbox.YMax,
-                    "Zmin": bbox.ZMin, "Zmax": bbox.ZMax,
-                    "Xlen": bbox.XLength, "Ylen": bbox.YLength, "Zlen": bbox.ZLength
-                }
-        
+        if not shape:
+            continue
+        if name == "band":
+            true_outer_r = band_inner_radius + band_thickness
+            stats["components"]["band"] = {
+                "Xmin": -true_outer_r, "Xmax":  true_outer_r,
+                "Ymin": -band_width/2, "Ymax":  band_width/2,
+                "Zmin": -true_outer_r, "Zmax":  true_outer_r,
+                "Xlen": 2*true_outer_r, "Ylen": band_width, "Zlen": 2*true_outer_r
+            }
+        else:
+            bbox = shape.BoundBox
+            stats["components"][name] = {
+                "Xmin": bbox.XMin, "Xmax": bbox.XMax,
+                "Ymin": bbox.YMin, "Ymax": bbox.YMax,
+                "Zmin": bbox.ZMin, "Zmax": bbox.ZMax,
+                "Xlen": bbox.XLength, "Ylen": bbox.YLength, "Zlen": bbox.ZLength
+            }
+
     stats_path = f"{output_prefix}_stats.json"
     with open(stats_path, 'w') as sf:
         json.dump(stats, sf, indent=2)
     print(f"Saved model bounds stats to {stats_path}")
-    
     print("FreeCAD generation complete!")
+
 
 if __name__ == "__main__":
     main()

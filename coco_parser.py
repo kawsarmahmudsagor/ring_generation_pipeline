@@ -5,6 +5,7 @@ import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+
 class BBox:
     """Helper class to represent a bounding box [x_min, y_min, width, height] in pixels."""
     def __init__(self, bbox_list):
@@ -24,7 +25,6 @@ def load_coco_annotations(json_path: str, target_image_id: int):
     if not os.path.exists(json_path):
         logging.error(f"COCO file not found: {json_path}")
         return []
-
     try:
         with open(json_path, 'r') as f:
             data = json.load(f)
@@ -32,7 +32,6 @@ def load_coco_annotations(json_path: str, target_image_id: int):
         logging.error(f"Failed to read COCO JSON {json_path}: {e}")
         return []
 
-    # Map category ID to category name
     cat_map = {}
     for cat in data.get("categories", []):
         cat_map[cat["id"]] = cat["name"].lower()
@@ -44,8 +43,7 @@ def load_coco_annotations(json_path: str, target_image_id: int):
 
         cat_id = ann.get("category_id")
         cat_name = cat_map.get(cat_id, "unknown")
-        
-        # Standardize category names according to user's schema
+
         if cat_name in ["shank", "band", "ring_band"]:
             cat_name = "band"
         elif cat_name in ["void", "finger_hole"]:
@@ -71,7 +69,7 @@ def load_coco_annotations(json_path: str, target_image_id: int):
             "segmentation": ann.get("segmentation", []),
             "area": ann.get("area", 0)
         })
-    
+
     logging.info(f"Loaded {len(annotations)} annotations for image_id {target_image_id} from {json_path}")
     return annotations
 
@@ -91,7 +89,6 @@ def get_combined_bbox(anns, category):
 def parse_geometry(coco_path: str, top_image_id: int = None, side_image_id: int = None) -> dict:
     """
     Parses a single COCO annotation file to extract physical 3D dimensions of the ring.
-    Filters by top_image_id and side_image_id and groups them into head and shank components.
     """
     if top_image_id is None:
         top_image_id = config.TOP_IMAGE_ID
@@ -101,56 +98,58 @@ def parse_geometry(coco_path: str, top_image_id: int = None, side_image_id: int 
     top_anns = load_coco_annotations(coco_path, top_image_id)
     side_anns = load_coco_annotations(coco_path, side_image_id)
 
-    # 1. Find Band and Inner Band (Void) in Top/Side views using combined bounding boxes
     top_band_ann = get_combined_bbox(top_anns, "band")
     top_inner_ann = get_combined_bbox(top_anns, "inner_band")
-
     side_band_ann = get_combined_bbox(side_anns, "band")
     side_inner_ann = get_combined_bbox(side_anns, "inner_band")
 
-    # Base scale calculation (px to mm)
     inner_diameter_mm = config.DEFAULT_INNER_DIAMETER_MM
     outer_diameter_mm = inner_diameter_mm + 2 * config.DEFAULT_BAND_THICKNESS_MM
 
-    # Determine Top view scale
+    # --- Top view scale & origin ---
     if top_inner_ann:
         inner_px_top = top_inner_ann.w
         scale_top = inner_diameter_mm / inner_px_top
         cx_top = top_inner_ann.cx
         cy_top = top_inner_ann.cy
-        logging.info(f"Top scale calculated from 'Void' (inner_band): {scale_top:.4f} mm/px")
+        logging.info(f"Top scale from 'Void': {scale_top:.4f} mm/px")
     elif top_band_ann:
         outer_px_top = top_band_ann.w
         scale_top = outer_diameter_mm / outer_px_top
         cx_top = top_band_ann.cx
         cy_top = top_band_ann.cy
-        logging.info(f"Top scale calculated from outer band: {scale_top:.4f} mm/px")
+        logging.info(f"Top scale from outer band: {scale_top:.4f} mm/px")
     else:
         scale_top = 0.05
         cx_top = 400.0
         cy_top = 400.0
-        logging.warning(f"No band or Void found in top view. Using default scale: {scale_top} mm/px")
+        logging.warning(f"No band or Void found in top view. Using default scale.")
 
-    # Determine Side view scale
-    if side_inner_ann:
+    # --- Side view scale & origin ---
+    # The side-view origin (cx_side, cy_side) is the ring centre in pixel space.
+    # In the side view the ring is oriented so the finger hole is horizontal;
+    # the band bottom is at the bottom of the image.  We use the *band* annotation
+    # to locate the ring centre so that Z=0 aligns with the ring's geometric centre.
+    if side_band_ann:
+        outer_px_side = side_band_ann.w
+        scale_side = outer_diameter_mm / outer_px_side
+        cx_side = side_band_ann.cx
+        # Place the Z=0 origin at the geometric centre of the band in the side view.
+        # The band in the side view is a circle; its centre pixel IS the ring centre.
+        cy_side = side_band_ann.cy
+        logging.info(f"Side scale from band: {scale_side:.4f} mm/px, origin=({cx_side:.1f},{cy_side:.1f})")
+    elif side_inner_ann:
         inner_px_side = (side_inner_ann.w + side_inner_ann.h) / 2.0
         scale_side = inner_diameter_mm / inner_px_side
         cx_side = side_inner_ann.cx
         cy_side = side_inner_ann.cy
-        logging.info(f"Side scale calculated from 'Void' (inner_band): {scale_side:.4f} mm/px")
-    elif side_band_ann:
-        outer_px_side = side_band_ann.w
-        scale_side = outer_diameter_mm / outer_px_side
-        cx_side = side_band_ann.cx
-        cy_side = side_band_ann.cy
-        logging.info(f"Side scale calculated from band outer width: {scale_side:.4f} mm/px")
+        logging.info(f"Side scale from 'Void': {scale_side:.4f} mm/px")
     else:
         scale_side = 0.05
         cx_side = 400.0
         cy_side = 400.0
-        logging.warning(f"No band or Void found in side view. Using default scale: {scale_side} mm/px")
+        logging.warning(f"No band or Void found in side view. Using default scale.")
 
-    # Store geometry details
     geometry = {
         "meta": {
             "scale_top": scale_top,
@@ -162,7 +161,7 @@ def parse_geometry(coco_path: str, top_image_id: int = None, side_image_id: int 
         "head": {}
     }
 
-    # Extract Band Geometry (part of Shank)
+    # --- Band geometry ---
     band_width_mm = config.DEFAULT_BAND_WIDTH_MM
     band_thickness_mm = config.DEFAULT_BAND_THICKNESS_MM
     if top_band_ann and top_inner_ann:
@@ -175,48 +174,59 @@ def parse_geometry(coco_path: str, top_image_id: int = None, side_image_id: int 
         "outer_radius": (inner_diameter_mm / 2.0) + band_thickness_mm
     }
 
-    # Helper function to convert a bounding box to physical metrics
+    # Helper: convert pixel bounding box to physical mm dimensions
     def get_physical_dims(bbox_top, bbox_side, category=None):
         dims = {}
+
         if bbox_top:
-            dims["width"] = bbox_top.w * scale_top
-            dims["length"] = bbox_top.h * scale_top
+            dims["width"]    = bbox_top.w * scale_top
+            dims["length"]   = bbox_top.h * scale_top
             dims["x_offset"] = (bbox_top.cx - cx_top) * scale_top
             dims["y_offset"] = (cy_top - bbox_top.cy) * scale_top
+
         if bbox_side:
             if "width" not in dims:
                 dims["width"] = bbox_side.w * scale_side
             dims["height"] = bbox_side.h * scale_side
             dims["x_offset_side"] = (bbox_side.cx - cx_side) * scale_side
-            
+
+            # FIX: The side-view coordinate system has Y pointing DOWN in pixels,
+            # so "higher on ring" = smaller pixel Y = larger Z in world space.
+            # cy_side is the ring centre pixel (Z=0 in world space = centre of band).
+            # A component whose pixel centre is ABOVE cy_side has positive world Z.
+            #
+            # component_center_z = (cy_side - bbox_side.cy) * scale_side
+            #
+            # context/freecad z_offset means the BASE (bottom) of the component.
+            # base_z = center_z - half_height
+            #
+            # The old code used:  center_z + 0.25 * height   <-- WRONG
+            # That formula shifted the z_offset 0.75 * height above the actual
+            # base, landing near the girdle. This made the stone float far too high
+            # and was the root cause of the head/band gap in the render.
+
+            component_h_mm = bbox_side.h * scale_side
             center_z = (cy_side - bbox_side.cy) * scale_side
-            if category == "center_stone":
-                # Girdle plane is at 75% height from bottom (or 25% from top), so we add 25% of height to the center Z
-                dims["z_offset"] = center_z + (bbox_side.h * scale_side) * 0.25
-            else:
-                dims["z_offset"] = center_z
+            dims["z_offset"] = center_z - component_h_mm / 2.0  # base = center - half_height
+
         return dims
 
-    # Process Head components
-    head_categories = ["center_stone", "prongs", "gallery", "bridge", "halo"]
-    for category in head_categories:
-        bbox_top = get_combined_bbox(top_anns, category)
+    # --- Head components ---
+    for category in ["center_stone", "prongs", "gallery", "bridge", "halo"]:
+        bbox_top  = get_combined_bbox(top_anns,  category)
         bbox_side = get_combined_bbox(side_anns, category)
-
         if bbox_top or bbox_side:
             geometry["head"][category] = get_physical_dims(bbox_top, bbox_side, category)
-            geometry["head"][category]["bbox_top"] = bbox_top.to_dict() if bbox_top else None
+            geometry["head"][category]["bbox_top"]  = bbox_top.to_dict()  if bbox_top  else None
             geometry["head"][category]["bbox_side"] = bbox_side.to_dict() if bbox_side else None
 
-    # Process Shank components
-    shank_categories = ["shoulder", "side_stones"]
-    for category in shank_categories:
-        bbox_top = get_combined_bbox(top_anns, category)
+    # --- Shank components ---
+    for category in ["shoulder", "side_stones"]:
+        bbox_top  = get_combined_bbox(top_anns,  category)
         bbox_side = get_combined_bbox(side_anns, category)
-
         if bbox_top or bbox_side:
             geometry["shank"][category] = get_physical_dims(bbox_top, bbox_side, category)
-            geometry["shank"][category]["bbox_top"] = bbox_top.to_dict() if bbox_top else None
+            geometry["shank"][category]["bbox_top"]  = bbox_top.to_dict()  if bbox_top  else None
             geometry["shank"][category]["bbox_side"] = bbox_side.to_dict() if bbox_side else None
 
     return geometry
